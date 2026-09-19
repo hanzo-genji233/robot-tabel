@@ -87,6 +87,77 @@ export function initializeAssistant() {
     result.dataset.tone = meeting?.state === "failed" ? "error" : meeting?.state === "completed" ? "ok" : "";
     const audio = $("#meetingAudio");
     if (meeting?.audio_url) { audio.href = meeting.audio_url; audio.hidden = false; } else { audio.hidden = true; }
+    const processingState = $("#meetingProcessingState");
+    if (!meeting) {
+      processingState.textContent = "录音停止后显示转写与纪要状态";
+    } else if (meeting.state === "recording") {
+      processingState.textContent = "正在录音，停止后将自动进入本地处理";
+    } else {
+      processingState.textContent = `转写：${meeting.transcript_state || "待处理"} · 纪要：${meeting.evaluation_state || "待处理"}`;
+    }
+    const transcript = $("#meetingTranscript");
+    const summary = $("#meetingSummary");
+    if (meeting?.transcript_url) { transcript.href = meeting.transcript_url; transcript.hidden = false; } else { transcript.hidden = true; }
+    if (meeting?.summary_preview_url || meeting?.summary_url) {
+      summary.href = meeting.summary_preview_url || meeting.summary_url;
+      summary.hidden = false;
+    } else { summary.hidden = true; }
+    renderActionItems(meeting);
+  }
+
+  function renderActionItems(meeting) {
+    const container = $("#meetingActionItems");
+    container.replaceChildren();
+    const items = meeting?.action_items || [];
+    if (!items.length) { container.textContent = "暂无行动项"; return; }
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "meeting-action-item";
+      row.dataset.state = item.state;
+      const copy = document.createElement("div");
+      const title = document.createElement("strong"); title.textContent = item.title;
+      const meta = document.createElement("small");
+      const origin = item.source === "transcript_summary" ? "真实转写提取" : clock(item.elapsed_seconds);
+      const owner = item.owner ? ` · 责任人：${item.owner}` : "";
+      const due = item.due ? ` · 截止：${item.due}` : "";
+      meta.textContent = `${origin}${owner}${due} · ${item.state === "pending_confirmation" ? "待确认" : item.state === "confirmed_local" ? "已确认（未外部回写）" : "已忽略"}`;
+      copy.append(title, meta); row.append(copy);
+      if (item.state === "pending_confirmation") {
+        const controls = document.createElement("div");
+        for (const [action, label] of [["confirm", "确认"], ["dismiss", "忽略"]]) {
+          const button = document.createElement("button"); button.type = "button"; button.textContent = label;
+          button.addEventListener("click", async () => {
+            await request(`/api/assistant/meeting/${encodeURIComponent(meeting.id)}/actions/${encodeURIComponent(item.id)}`, {
+              method: "POST", body: JSON.stringify({ action }),
+            });
+            await refresh();
+          });
+          controls.append(button);
+        }
+        row.append(controls);
+      }
+      container.append(row);
+    }
+  }
+
+  function renderDemo(status) {
+    const meeting = status.meeting;
+    const hasDemoAgenda = (status.agenda || []).some((event) => event.title.includes("演示"));
+    const hasMark = Boolean(meeting?.marks?.length);
+    const processed = meeting?.state === "completed" || meeting?.state === "failed";
+    const states = {
+      agenda: hasDemoAgenda ? "complete" : "ready",
+      record: meeting ? (status.recording_active ? "active" : "complete") : "ready",
+      mark: hasMark ? "complete" : (status.recording_active ? "ready" : "locked"),
+      process: processed ? "complete" : (meeting?.state === "stopping" ? "active" : "locked"),
+    };
+    for (const [step, state] of Object.entries(states)) {
+      const element = panel.querySelector(`[data-demo-step="${step}"]`);
+      if (element) element.dataset.state = state;
+    }
+    $("#demoStartMeeting").disabled = Boolean(status.recording_active);
+    $("#demoMarkTodo").disabled = !status.recording_active;
+    $("#demoStopMeeting").disabled = !status.recording_active;
   }
 
   async function refresh() {
@@ -98,6 +169,7 @@ export function initializeAssistant() {
       $("#assistantAsrState").textContent = status.asr.message;
       renderAgenda(status.agenda || []);
       renderMeeting(status.meeting);
+      renderDemo(status);
       agendaResult.textContent = `已加载 ${status.agenda?.length || 0} 个日程`;
       agendaResult.dataset.tone = "ok";
     } catch (error) {
@@ -151,6 +223,31 @@ export function initializeAssistant() {
       $("#meetingResult").textContent = `已标记：${button.dataset.meetingMark}`;
     } catch (error) { $("#meetingResult").textContent = error.message; }
   }));
+
+  $("#demoLoadAgenda").addEventListener("click", async () => {
+    const output = $("#demoJourneyResult"); output.textContent = "正在载入演示议程…";
+    try {
+      const result = await request("/api/assistant/demo/bootstrap", { method: "POST" });
+      $("#meetingTitle").value = "产品周会（演示）";
+      output.textContent = result.message;
+      await refresh();
+    } catch (error) { output.textContent = error.message; output.dataset.tone = "error"; }
+  });
+  $("#demoStartMeeting").addEventListener("click", () => $("#startMeeting").click());
+  $("#demoMarkTodo").addEventListener("click", async () => {
+    const output = $("#demoJourneyResult");
+    try {
+      const result = await request("/api/assistant/meeting/mark", { method: "POST", body: JSON.stringify({
+        label: "待办", note: "",
+      }) });
+      output.textContent = `已在 ${clock(result.mark.elapsed_seconds)} 留下时间锚点；行动项将从真实转写中提取`;
+      renderMeeting(result.meeting);
+    } catch (error) { output.textContent = error.message; output.dataset.tone = "error"; }
+  });
+  $("#demoStopMeeting").addEventListener("click", () => {
+    $("#demoJourneyResult").textContent = "正在停止录音并进入会后处理…";
+    $("#stopMeeting").click();
+  });
 
   setDefaults();
   refresh();

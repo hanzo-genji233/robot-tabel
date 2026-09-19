@@ -110,6 +110,20 @@
           </div>
         </div>
 
+        <div class="demo-journey" id="demoJourney" aria-label="90 秒现场演示路径">
+          <div class="demo-journey-head">
+            <div><span>90 秒现场演示</span><strong>从今日议程到待确认行动项</strong></div>
+            <small>演示数据会标明来源；不会真实写回飞书或企微</small>
+          </div>
+          <ol>
+            <li data-demo-step="agenda"><b>01</b><span>打开今日议程</span><button id="demoLoadAgenda" type="button">载入演示议程</button></li>
+            <li data-demo-step="record"><b>02</b><span>开始会议录音</span><button id="demoStartMeeting" type="button">SDK 录音</button></li>
+            <li data-demo-step="mark"><b>03</b><span>标记待办</span><button id="demoMarkTodo" type="button">留下时间锚点</button></li>
+            <li data-demo-step="process"><b>04</b><span>停止并进入处理</span><button id="demoStopMeeting" type="button">停止并处理</button></li>
+          </ol>
+          <output id="demoJourneyResult" class="station-result">点击 01 开始演示</output>
+        </div>
+
         <div class="assistant-grid">
           <article class="assistant-card">
             <div class="assistant-card-head">
@@ -147,6 +161,18 @@
             </div>
             <output id="meetingResult" class="station-result">未开始录音</output>
             <a id="meetingAudio" class="assistant-audio-link" hidden>播放已保存录音</a>
+            <div class="meeting-processing" id="meetingProcessing">
+              <strong>会后处理</strong>
+              <span id="meetingProcessingState">录音停止后显示转写与纪要状态</span>
+              <div class="meeting-output-links">
+                <a id="meetingTranscript" hidden>查看逐字稿</a>
+                <a id="meetingSummary" hidden>查看会议纪要</a>
+              </div>
+            </div>
+            <div class="meeting-actions-panel">
+              <div><strong>待确认行动项</strong><small>确认只记录本地决定，不写回外部系统</small></div>
+              <div id="meetingActionItems" class="meeting-action-items">暂无行动项</div>
+            </div>
             <p class="assistant-note">录音时日程提醒将静默排队；停止后恢复处理。音频会本地保存，转写和评估需接入本地 ASR。</p>
           </article>
         </div>

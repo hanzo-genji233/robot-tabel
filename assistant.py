@@ -97,7 +97,8 @@ class AssistantStore:
         end = parse_datetime(str(payload.get("end") or ""))
         if end <= start:
             raise ValueError("end must be after start")
-        reminder_minutes = int(payload.get("reminder_minutes") or 15)
+        raw_reminder_minutes = payload.get("reminder_minutes")
+        reminder_minutes = 15 if raw_reminder_minutes is None else int(raw_reminder_minutes)
         if reminder_minutes < 0 or reminder_minutes > 10_080:
             raise ValueError("reminder_minutes must be between 0 and 10080")
         external_id = str(payload.get("external_event_id") or "").strip()
@@ -124,7 +125,7 @@ class AssistantStore:
             "presence_check": bool(payload.get("presence_check", True)),
             "status": str(payload.get("status") or "scheduled"),
             "reminder_state": str(payload.get("reminder_state") or "pending"),
-            "reminder_attempts": int(payload.get("reminder_attempts") or 0),
+            "reminder_attempts": int(payload.get("reminder_attempts", 0)),
         }
         with self._lock:
             for index, existing in enumerate(self._events):
@@ -132,9 +133,10 @@ class AssistantStore:
                     event["reminder_state"] = str(
                         payload.get("reminder_state") or existing.get("reminder_state") or "pending"
                     )
-                    event["reminder_attempts"] = int(
-                        payload.get("reminder_attempts") or existing.get("reminder_attempts") or 0
-                    )
+                    if "reminder_attempts" in payload:
+                        event["reminder_attempts"] = int(payload["reminder_attempts"])
+                    else:
+                        event["reminder_attempts"] = int(existing.get("reminder_attempts") or 0)
                     self._events[index] = event
                     break
             else:
@@ -279,6 +281,7 @@ class AssistantStore:
             "state": "starting",
             "started_at": _iso(now),
             "marks": [],
+            "action_items": [],
             "transcript_state": "awaiting_recording",
             "evaluation_state": "awaiting_transcript",
         }
@@ -314,6 +317,78 @@ class AssistantStore:
             self._save_meetings()
         self.audit("meeting.marked", {"meeting_id": meeting_id, "label": mark["label"]})
         return mark
+
+    def replace_action_items(
+        self, meeting_id: str, candidates: list[dict[str, str]]
+    ) -> dict[str, Any]:
+        """Replace action items with items derived from the real meeting transcript summary."""
+        with self._lock:
+            meeting = next((item for item in self._meetings if item.get("id") == meeting_id), None)
+            if meeting is None:
+                raise KeyError(meeting_id)
+            marks = [
+                mark for mark in meeting.get("marks", [])
+                if mark.get("label") in {"待办", "待确认"}
+            ]
+            anchor = marks[0] if marks else {}
+            generated: list[dict[str, Any]] = []
+            for candidate in candidates:
+                title = str(candidate.get("title") or "").strip()[:500]
+                if not title:
+                    continue
+                owner = str(candidate.get("owner") or "待确认").strip()[:120]
+                due = str(candidate.get("due") or "待确认").strip()[:120]
+                stable_key = f"{meeting_id}:{owner}:{title}:{due}"
+                generated.append({
+                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, stable_key)),
+                    "title": title,
+                    "owner": owner or "待确认",
+                    "due": due or "待确认",
+                    "source": "transcript_summary",
+                    "source_mark_id": str(anchor.get("id") or ""),
+                    "elapsed_seconds": float(anchor.get("elapsed_seconds") or 0),
+                    "state": "pending_confirmation",
+                    "write_back": False,
+                    "created_at": _iso(_now()),
+                })
+            meeting["action_items"] = generated
+            meeting["action_items_source"] = "real_transcript_summary"
+            self._save_meetings()
+            result = dict(meeting)
+        self.audit(
+            "meeting.action_items_extracted",
+            {"meeting_id": meeting_id, "count": len(generated)},
+        )
+        return result
+
+    def update_action_item(
+        self, meeting_id: str, action_item_id: str, action: str
+    ) -> dict[str, Any]:
+        with self._lock:
+            meeting = next((item for item in self._meetings if item.get("id") == meeting_id), None)
+            if meeting is None:
+                raise KeyError(meeting_id)
+            item = next(
+                (value for value in meeting.get("action_items", []) if value.get("id") == action_item_id),
+                None,
+            )
+            if item is None:
+                raise KeyError(action_item_id)
+            if action == "confirm":
+                item["state"] = "confirmed_local"
+                item["write_back"] = False
+            elif action == "dismiss":
+                item["state"] = "dismissed"
+            else:
+                raise ValueError("action must be confirm or dismiss")
+            item["updated_at"] = _iso(_now())
+            self._save_meetings()
+            result = dict(item)
+        self.audit(
+            "meeting.action_item_changed",
+            {"meeting_id": meeting_id, "action_item_id": action_item_id, "action": action},
+        )
+        return result
 
     def meeting(self, meeting_id: str) -> dict[str, Any] | None:
         with self._lock:

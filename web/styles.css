@@ -528,6 +528,20 @@ footer { position: relative; z-index: 11; display: flex; justify-content: space-
 .assistant-health { min-width: 250px; padding: 15px; border: 1px solid var(--line); display: grid; gap: 6px; }
 .assistant-health span, .assistant-health small, .assistant-card-head span { color: var(--muted); font: .62rem/1.4 var(--mono); letter-spacing: .08em; }
 .assistant-health strong { color: var(--signal); }
+.demo-journey { margin-top: 22px; padding: 18px; border: 1px solid var(--line); background: rgba(217, 255, 87, .025); }
+.demo-journey-head { display: flex; justify-content: space-between; gap: 18px; align-items: end; }
+.demo-journey-head div { display: grid; gap: 5px; }
+.demo-journey-head span, .demo-journey-head small { color: var(--muted); font: .62rem/1.5 var(--mono); }
+.demo-journey-head strong { font-size: 1rem; }
+.demo-journey ol { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+.demo-journey li { display: grid; gap: 7px; padding: 13px; border-top: 2px solid var(--line-bright); background: rgba(255,255,255,.018); }
+.demo-journey li[data-state="active"] { border-color: var(--amber); }
+.demo-journey li[data-state="complete"] { border-color: var(--signal); }
+.demo-journey li[data-state="locked"] { opacity: .42; }
+.demo-journey li b { color: var(--signal); font: 800 1.15rem var(--mono); }
+.demo-journey li span { min-height: 2.5em; font-size: .78rem; }
+.demo-journey li button { min-height: 38px; padding: 7px; color: var(--paper); background: transparent; border: 1px solid var(--line-bright); font: .62rem var(--mono); }
+.demo-journey li button:disabled { opacity: .35; }
 .assistant-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; margin-top: 24px; }
 .assistant-card { --accent: var(--signal); min-width: 0; padding: 22px; border: 1px solid var(--line); background: rgba(5, 8, 7, .65); }
 .assistant-card h3 { margin: 4px 0 0; font-size: 1.3rem; }
@@ -551,7 +565,18 @@ footer { position: relative; z-index: 11; display: flex; justify-content: space-
 .meeting-marks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .assistant-note { color: var(--muted); font-size: .76rem; line-height: 1.6; }
 .assistant-audio-link { color: var(--signal); font: .72rem var(--mono); }
+.meeting-processing, .meeting-actions-panel { display: grid; gap: 8px; padding: 13px; border: 1px solid var(--line); background: rgba(255,255,255,.018); }
+.meeting-processing span, .meeting-actions-panel small, .meeting-action-item small { color: var(--muted); font: .62rem/1.5 var(--mono); }
+.meeting-output-links { display: flex; gap: 14px; }
+.meeting-output-links a { color: var(--signal); font: .68rem var(--mono); }
+.meeting-actions-panel > div:first-child { display: grid; gap: 4px; }
+.meeting-action-items { display: grid; gap: 7px; color: var(--muted); }
+.meeting-action-item { display: flex; justify-content: space-between; gap: 10px; padding-top: 9px; border-top: 1px solid var(--line); }
+.meeting-action-item > div:first-child { display: grid; gap: 3px; }
+.meeting-action-item > div:last-child { display: flex; gap: 6px; }
+.meeting-action-item button { padding: 6px 9px; color: var(--paper); background: transparent; border: 1px solid var(--line-bright); font: .6rem var(--mono); }
+.meeting-action-item[data-state="confirmed_local"] strong { color: var(--signal); }
 @keyframes assistant-pulse { 50% { opacity: .45; } }
 
-@media (max-width: 1080px) { .assistant-grid { grid-template-columns: 1fr; } .assistant-event-form { grid-template-columns: 1fr 1fr; } .assistant-event-form .assistant-check, .assistant-event-form .station-action { grid-column: auto; } }
-@media (max-width: 720px) { .assistant-panel { padding: 22px; } .assistant-heading, .assistant-card-head, .assistant-event { display: grid; } .assistant-health { min-width: 0; } .assistant-event-form { grid-template-columns: 1fr; } .meeting-marks { grid-template-columns: 1fr; } }
+@media (max-width: 1080px) { .assistant-grid { grid-template-columns: 1fr; } .assistant-event-form { grid-template-columns: 1fr 1fr; } .assistant-event-form .assistant-check, .assistant-event-form .station-action { grid-column: auto; } .demo-journey ol { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 720px) { .assistant-panel { padding: 22px; } .assistant-heading, .assistant-card-head, .assistant-event, .demo-journey-head { display: grid; } .assistant-health { min-width: 0; } .assistant-event-form, .demo-journey ol { grid-template-columns: 1fr; } .meeting-marks { grid-template-columns: 1fr; } .meeting-action-item { display: grid; } }

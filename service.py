@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import math
+import os
 import re
 import socket
 import subprocess
@@ -49,6 +50,20 @@ _MDNS_HOST_CANDIDATE = re.compile(
 )
 _MAINTENANCE_INTERVAL_SECONDS = 0.25
 _LOGGER = logging.getLogger(__name__)
+_MEETING_SKILL_HOME = Path(
+    os.environ.get(
+        "WATCHER_MEETING_PIPELINE_HOME",
+        str(Path.home() / ".workbuddy/skills/feishu-meeting-transcript"),
+    )
+)
+_MEETING_TRANSCRIBE = _MEETING_SKILL_HOME / "scripts/transcribe.py"
+_MEETING_SUMMARIZE = _MEETING_SKILL_HOME / "scripts/summarize.py"
+_MEETING_PIPELINE_PYTHON = Path(
+    os.environ.get(
+        "WATCHER_MEETING_PIPELINE_PYTHON",
+        str(Path.home() / ".workbuddy/binaries/python/envs/default/bin/python"),
+    )
+)
 
 
 class MediaLabBusyError(RuntimeError):
@@ -259,6 +274,10 @@ class MeetingMarkRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class MeetingActionRequest(BaseModel):
+    action: str = Field(pattern=r"^(confirm|dismiss)$")
+
+
 class MediaLabService:
     """Arbitrate hardware resources and expose stable, JSON-ready diagnostics."""
 
@@ -317,10 +336,18 @@ class MediaLabService:
         self._face_preview_last_frame_at = 0.0
         self._assistant = AssistantStore(self._artifacts_dir.parent / "assistant_data")
         self._assistant_lock = threading.RLock()
-        self._meeting: dict[str, object] | None = None
+        recent_meetings = self._assistant.meetings()
+        self._meeting: dict[str, object] | None = recent_meetings[0] if recent_meetings else None
+        if self._meeting and self._meeting.get("state") in {"starting", "recording", "stopping"}:
+            self._meeting = self._assistant.update_meeting(
+                str(self._meeting["id"]),
+                state="failed",
+                error="service_restarted_during_recording",
+            )
         self._meeting_recording: Any = None
         self._meeting_operation: Any = None
         self._meeting_thread: threading.Thread | None = None
+        self._meeting_postprocess_thread: threading.Thread | None = None
         self._meeting_stop = threading.Event()
         self._meeting_started_monotonic = 0.0
         self._meeting_max_seconds = 0.0
@@ -751,11 +778,7 @@ class MediaLabService:
             "meeting": meeting,
             "meetings": self._assistant.meetings(),
             "recording_active": bool(meeting and meeting.get("state") in {"starting", "recording", "stopping"}),
-            "asr": {
-                "available": False,
-                "state": "extension_required",
-                "message": "录音将可靠保存；需配置本地 ASR 后才会生成逐字稿与评估。",
-            },
+            "asr": self._meeting_pipeline_status(),
             "fallback_channels": ["feishu", "wecom"],
         }
 
@@ -774,6 +797,47 @@ class MediaLabService:
     def sync_macos_agenda(self, *, hours: int = 48) -> dict[str, object]:
         imported = self._assistant.sync_macos_calendar(hours=hours)
         return {"events": imported, "count": len(imported), "write_back": False}
+
+    def bootstrap_demo_agenda(self) -> dict[str, object]:
+        now = datetime.now(timezone.utc)
+        day_key = now.astimezone().strftime("%Y-%m-%d")
+        events = [
+            self._assistant.upsert_event({
+                "source": "feishu",
+                "external_event_id": f"demo-feishu-{day_key}",
+                "calendar_id": "demo-feishu",
+                "title": "产品周会（演示）",
+                "start": (now + timedelta(minutes=8)).isoformat(),
+                "end": (now + timedelta(minutes=38)).isoformat(),
+                "timezone": str(datetime.now().astimezone().tzinfo),
+                "write_back": False,
+                "description": "90 秒现场演示的临近会议",
+                "reminder_minutes": 0,
+                "reminder_attempts": 0,
+                "presence_check": False,
+                "reminder_state": "pending",
+            }),
+            self._assistant.upsert_event({
+                "source": "macos",
+                "external_event_id": f"demo-macos-{day_key}",
+                "calendar_id": "demo-macos",
+                "title": "个人专注时间（演示）",
+                "start": (now + timedelta(minutes=55)).isoformat(),
+                "end": (now + timedelta(minutes=85)).isoformat(),
+                "timezone": str(datetime.now().astimezone().tzinfo),
+                "write_back": False,
+                "description": "展示 Mac / 手机日历的统一视图",
+                "reminder_minutes": 0,
+                "reminder_attempts": 0,
+                "presence_check": False,
+                "reminder_state": "pending",
+            }),
+        ]
+        return {
+            "events": events,
+            "count": len(events),
+            "message": "演示议程已载入，外部来源保持只读。",
+        }
 
     def update_agenda_event(self, event_id: str, *, action: str, minutes: int = 10) -> dict[str, object]:
         try:
@@ -925,12 +989,34 @@ class MediaLabService:
         partial = raw_path.with_suffix(".wrec.part")
         wav_path = self._assistant.meetings_dir / f"{meeting_id}.wav"
         stop_requested_at: float | None = None
-        last_heartbeat = time.monotonic()
+        heartbeat_stop = threading.Event()
+        heartbeat_thread: threading.Thread | None = None
         error_message = ""
+        postprocess_ready = False
         try:
             recording = self._meeting_recording
             if recording is None:
                 raise RuntimeError("recording stream unavailable")
+
+            def maintain_heartbeat() -> None:
+                while not heartbeat_stop.wait(4.0):
+                    try:
+                        self._robot.recordings.heartbeat(recording.id)
+                    except TimeoutError:
+                        # A command response can time out while audio frames are
+                        # still arriving. Keep the reader alive and let the
+                        # recording stream itself determine success or failure.
+                        _LOGGER.warning("Meeting recording heartbeat timed out; continuing")
+                    except Exception:
+                        if not heartbeat_stop.is_set():
+                            _LOGGER.warning("Meeting recording heartbeat failed; continuing", exc_info=True)
+
+            heartbeat_thread = threading.Thread(
+                target=maintain_heartbeat,
+                daemon=True,
+                name=f"assistant-meeting-heartbeat-{meeting_id[:8]}",
+            )
+            heartbeat_thread.start()
             with partial.open("wb") as sink:
                 while True:
                     now = time.monotonic()
@@ -938,14 +1024,12 @@ class MediaLabService:
                         now - self._meeting_started_monotonic >= self._meeting_max_seconds
                     )
                     if should_stop and stop_requested_at is None:
+                        heartbeat_stop.set()
                         recording.stop()
                         stop_requested_at = now
                         self._assistant.update_meeting(meeting_id, state="stopping")
                     if stop_requested_at is not None and now - stop_requested_at > 15.0:
                         raise RuntimeError("recording ended without a terminal stream marker")
-                    if now - last_heartbeat >= 4.0 and stop_requested_at is None:
-                        self._robot.recordings.heartbeat(recording.id)
-                        last_heartbeat = now
                     try:
                         frame = recording.read(timeout=1.0)
                     except TimeoutError:
@@ -962,23 +1046,49 @@ class MediaLabService:
                 duration_seconds=round(time.monotonic() - self._meeting_started_monotonic, 1),
                 audio_url=f"/assistant-artifacts/{wav_path.name}",
                 raw_recording=raw_path.name,
-                transcript_state="pending_asr",
+                transcript_state="queued",
                 evaluation_state="pending_transcript",
             )
             with self._assistant_lock:
                 self._meeting = completed
+            postprocess_ready = True
         except Exception as error:
-            error_message = str(error)
-            failed = self._assistant.update_meeting(
-                meeting_id,
-                state="failed",
-                error=error_message[:500],
-                partial_recording=partial.name if partial.exists() else "",
-            )
+            error_message = str(error).strip() or f"{type(error).__name__}: recording operation timed out"
+            recovered = False
+            if partial.is_file() and partial.stat().st_size > 0:
+                try:
+                    partial.replace(raw_path)
+                    write_pcm_wav(iter_wrec_records([raw_path]), wav_path)
+                    recovered = wav_path.is_file() and wav_path.stat().st_size > 44
+                except Exception:
+                    _LOGGER.exception("Partial meeting recording could not be recovered")
+            if recovered:
+                failed = self._assistant.update_meeting(
+                    meeting_id,
+                    state="completed",
+                    ended_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    duration_seconds=round(time.monotonic() - self._meeting_started_monotonic, 1),
+                    audio_url=f"/assistant-artifacts/{wav_path.name}",
+                    raw_recording=raw_path.name,
+                    transcript_state="queued",
+                    evaluation_state="pending_transcript",
+                    recording_warning=f"partial_recording_recovered: {error_message[:400]}",
+                )
+                postprocess_ready = True
+            else:
+                failed = self._assistant.update_meeting(
+                    meeting_id,
+                    state="failed",
+                    error=error_message[:500],
+                    partial_recording=partial.name if partial.exists() else "",
+                )
             with self._assistant_lock:
                 self._meeting = failed
             _LOGGER.exception("Meeting recording failed")
         finally:
+            heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=8.0)
             recording = self._meeting_recording
             if recording is not None:
                 try:
@@ -992,6 +1102,8 @@ class MediaLabService:
                 self._meeting_stop.clear()
             if operation is not None:
                 operation.__exit__(RuntimeError if error_message else None, RuntimeError(error_message) if error_message else None, None)
+        if postprocess_ready:
+            self._start_meeting_postprocess(meeting_id, wav_path)
 
     def mark_meeting(self, *, label: str, note: str) -> dict[str, object]:
         with self._assistant_lock:
@@ -999,7 +1111,30 @@ class MediaLabService:
                 raise MediaLabBusyError("No active meeting recording")
             meeting_id = str(self._meeting["id"])
             elapsed = time.monotonic() - self._meeting_started_monotonic
-        return {"mark": self._assistant.mark_meeting(meeting_id, label, note, elapsed)}
+        mark = self._assistant.mark_meeting(meeting_id, label, note, elapsed)
+        meeting = self._assistant.meeting(meeting_id)
+        if meeting is not None:
+            with self._assistant_lock:
+                self._meeting = meeting
+        return {"mark": mark, "meeting": meeting}
+
+    def update_meeting_action(
+        self, meeting_id: str, action_item_id: str, *, action: str
+    ) -> dict[str, object]:
+        try:
+            item = self._assistant.update_action_item(meeting_id, action_item_id, action)
+        except KeyError as error:
+            raise ValueError("meeting action item not found") from error
+        meeting = self._assistant.meeting(meeting_id)
+        if meeting is not None:
+            with self._assistant_lock:
+                if self._meeting and self._meeting.get("id") == meeting_id:
+                    self._meeting = meeting
+        return {
+            "action_item": item,
+            "meeting": meeting,
+            "external_write_performed": False,
+        }
 
     def stop_meeting_recording(self) -> dict[str, object]:
         with self._assistant_lock:
@@ -1014,6 +1149,156 @@ class MediaLabService:
         thread = self._meeting_thread
         if thread and thread.is_alive():
             thread.join(timeout=20.0)
+
+    def _meeting_pipeline_status(self) -> dict[str, object]:
+        missing = [
+            str(path)
+            for path in (
+                _MEETING_PIPELINE_PYTHON,
+                _MEETING_TRANSCRIBE,
+                _MEETING_SUMMARIZE,
+            )
+            if not path.is_file()
+        ]
+        return {
+            "available": not missing,
+            "state": "ready" if not missing else "extension_required",
+            "message": (
+                "本地 FunASR 转写与会议纪要已就绪。"
+                if not missing
+                else "会议录音会保存，但缺少会后处理组件。"
+            ),
+            "missing": missing,
+        }
+
+    def _start_meeting_postprocess(self, meeting_id: str, wav_path: Path) -> None:
+        thread = threading.Thread(
+            target=self._meeting_postprocess_worker,
+            args=(meeting_id, wav_path),
+            daemon=True,
+            name=f"assistant-meeting-postprocess-{meeting_id[:8]}",
+        )
+        with self._assistant_lock:
+            self._meeting_postprocess_thread = thread
+        thread.start()
+
+    def _meeting_postprocess_worker(self, meeting_id: str, wav_path: Path) -> None:
+        output_dir = self._assistant.meetings_dir / meeting_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            meeting = self._assistant.meeting(meeting_id) or {}
+            title = str(meeting.get("title") or "未命名会议")
+            self._set_current_meeting(
+                meeting_id,
+                transcript_state="transcribing",
+                evaluation_state="pending_transcript",
+            )
+            self._run_meeting_tool(
+                _MEETING_TRANSCRIBE,
+                [str(wav_path), "--title", title, "--output-dir", str(output_dir)],
+                timeout=3600,
+            )
+            transcript = self._single_generated_file(output_dir, "*_transcript.md")
+            self._set_current_meeting(
+                meeting_id,
+                transcript_state="completed",
+                transcript_file=transcript.name,
+                transcript_url=f"/assistant-meetings/{meeting_id}/{transcript.name}",
+                evaluation_state="summarizing",
+            )
+            self._run_meeting_tool(
+                _MEETING_SUMMARIZE,
+                [str(transcript), "--title", title, "--output-dir", str(output_dir)],
+                timeout=900,
+            )
+            summary = self._single_generated_file(output_dir, "*_会议纪要.md")
+            preview = self._single_generated_file(output_dir, "*_会议纪要.html")
+            summary_text = summary.read_text(encoding="utf-8")
+            action_items = self._extract_summary_action_items(summary_text)
+            self._assistant.replace_action_items(meeting_id, action_items)
+            self._set_current_meeting(
+                meeting_id,
+                evaluation_state="completed",
+                action_items_extracted=len(action_items),
+                summary_file=summary.name,
+                summary_url=f"/assistant-meetings/{meeting_id}/{summary.name}",
+                summary_preview_url=f"/assistant-meetings/{meeting_id}/{preview.name}",
+            )
+        except Exception as error:
+            _LOGGER.exception("Meeting post-processing failed")
+            self._set_current_meeting(
+                meeting_id,
+                evaluation_state="failed",
+                postprocess_error=str(error)[:1000],
+            )
+
+    def _set_current_meeting(self, meeting_id: str, **changes: object) -> None:
+        updated = self._assistant.update_meeting(meeting_id, **changes)
+        with self._assistant_lock:
+            if self._meeting and self._meeting.get("id") == meeting_id:
+                self._meeting = updated
+
+    @staticmethod
+    def _extract_summary_action_items(summary_text: str) -> list[dict[str, str]]:
+        """Read action items from the generated Markdown summary, not from demo placeholders."""
+        lines = summary_text.splitlines()
+        in_actions = False
+        items: list[dict[str, str]] = []
+        for raw_line in lines:
+            line = raw_line.strip()
+            if re.match(r"^##\s+(待办事项|行动项)", line):
+                in_actions = True
+                continue
+            if in_actions and line.startswith("## "):
+                break
+            if not in_actions or not line:
+                continue
+            if line.startswith("|") and line.endswith("|"):
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if len(cells) < 3:
+                    continue
+                if cells[0] in {"责任人", "---"} or all(set(cell) <= {"-", ":"} for cell in cells):
+                    continue
+                owner, title, due = cells[0], cells[1], cells[2]
+                if title and title not in {"无", "暂无", "未提及"}:
+                    items.append({"owner": owner, "title": title, "due": due})
+                continue
+            bullet = re.match(r"^[-*]\s+(?:\[[ xX]\]\s*)?(.+)$", line)
+            if bullet:
+                title = bullet.group(1).strip()
+                if title and title not in {"无", "暂无", "未提及"}:
+                    items.append({"owner": "待确认", "title": title, "due": "待确认"})
+        return items
+
+    @staticmethod
+    def _run_meeting_tool(script: Path, args: list[str], *, timeout: float) -> None:
+        if not _MEETING_PIPELINE_PYTHON.is_file() or not script.is_file():
+            raise RuntimeError("meeting transcription pipeline is not installed")
+        completed = subprocess.run(
+            [str(_MEETING_PIPELINE_PYTHON), str(script), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(f"{script.name} failed: {detail[-1000:]}")
+
+    @staticmethod
+    def _single_generated_file(directory: Path, pattern: str) -> Path:
+        matches = sorted(directory.glob(pattern), key=lambda path: path.stat().st_mtime)
+        if not matches:
+            raise RuntimeError(f"meeting pipeline did not create {pattern}")
+        return matches[-1]
+
+    def assistant_meeting_artifact_path(self, meeting_id: str, filename: str) -> Path | None:
+        if re.fullmatch(r"[0-9a-f-]{36}", meeting_id) is None:
+            return None
+        if Path(filename).name != filename or not filename.endswith((".md", ".html")):
+            return None
+        path = self._assistant.meetings_dir / meeting_id / filename
+        return path if path.is_file() else None
 
     def assistant_artifact_path(self, filename: str) -> Path | None:
         if re.fullmatch(r"[0-9a-f-]{36}\.(?:wav|wrec)", filename) is None:
@@ -1489,6 +1774,10 @@ def create_web_app(service: MediaLabService, *, web_root: Path) -> FastAPI:
     async def sync_macos_calendar(hours: int = 48) -> dict[str, object]:
         return await _run_action(service.sync_macos_agenda, hours=hours)
 
+    @app.post("/api/assistant/demo/bootstrap")
+    async def bootstrap_assistant_demo() -> dict[str, object]:
+        return await _run_action(service.bootstrap_demo_agenda)
+
     @app.post("/api/assistant/events/{event_id}/action")
     async def update_assistant_event(
         event_id: str, request: AgendaEventActionRequest
@@ -1516,6 +1805,19 @@ def create_web_app(service: MediaLabService, *, web_root: Path) -> FastAPI:
     @app.post("/api/assistant/meeting/mark")
     async def mark_assistant_meeting(request: MeetingMarkRequest) -> dict[str, object]:
         return await _run_action(service.mark_meeting, label=request.label, note=request.note)
+
+    @app.post("/api/assistant/meeting/{meeting_id}/actions/{action_item_id}")
+    async def update_assistant_meeting_action(
+        meeting_id: str,
+        action_item_id: str,
+        request: MeetingActionRequest,
+    ) -> dict[str, object]:
+        return await _run_action(
+            service.update_meeting_action,
+            meeting_id=meeting_id,
+            action_item_id=action_item_id,
+            action=request.action,
+        )
 
     @app.post("/api/assistant/meeting/stop")
     async def stop_assistant_meeting() -> dict[str, object]:
@@ -1683,6 +1985,14 @@ def create_web_app(service: MediaLabService, *, web_root: Path) -> FastAPI:
         if path is None:
             raise HTTPException(status_code=404, detail="assistant artifact not found")
         media_type = "audio/wav" if path.suffix == ".wav" else "application/octet-stream"
+        return FileResponse(path, media_type=media_type)
+
+    @app.get("/assistant-meetings/{meeting_id}/{filename}")
+    async def assistant_meeting_artifact(meeting_id: str, filename: str) -> FileResponse:
+        path = service.assistant_meeting_artifact_path(meeting_id, filename)
+        if path is None:
+            raise HTTPException(status_code=404, detail="meeting artifact not found")
+        media_type = "text/html" if path.suffix == ".html" else "text/markdown"
         return FileResponse(path, media_type=media_type)
 
     return app
