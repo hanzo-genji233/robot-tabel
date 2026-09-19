@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en" data-i18n-ready="false">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>WatcheRobot SDK Test Bench</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+    <script src="/assets/app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="masthead">
+      <div class="identity">
+        <span class="mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <div>
+          <p class="eyebrow">WATCHE / HARDWARE SDK CONSOLE 01</p>
+          <h1>SDK Test Bench</h1>
+        </div>
+      </div>
+      <div class="masthead-actions">
+        <div class="locale-switch" role="group" aria-label="Language">
+          <button id="localeEnglish" type="button" data-locale="en-US" aria-pressed="true">EN</button>
+          <button id="localeChinese" type="button" data-locale="zh-CN" data-i18n-ignore aria-pressed="false">Chinese</button>
+        </div>
+        <div class="connection" id="connectionBadge" data-state="waiting">
+          <span class="status-lamp" aria-hidden="true"></span>
+          <div>
+            <small>Device Connection</small>
+            <strong id="connectionText">Calibrating</strong>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="mission-panel" aria-labelledby="missionTitle">
+        <div>
+          <p class="section-index">00 / System Overview</p>
+          <h2 id="missionTitle">One bench to validate the whole robot.</h2>
+          <p class="mission-copy">
+            From motion and lighting to camera and full-duplex audio, every test uses public SDK APIs from the current Python Application
+            and runs through its authorized Device channel.
+          </p>
+        </div>
+        <div class="run-block">
+          <button class="primary-action" id="runAllButton" type="button">
+            <span>Run Basic Check</span>
+            <small>Motion → Lights → Speaker → Camera → Microphone</small>
+          </button>
+          <p id="activeOperation" class="active-operation" aria-live="polite">System Idle</p>
+        </div>
+      </section>
+
+      <section class="pairing-panel" id="pairingPanel" aria-labelledby="pairingTitle">
+        <div>
+          <p class="section-index">00.5 / Device Access</p>
+          <h2 id="pairingTitle">Connect Robot</h2>
+          <p>Enter the six-digit pairing code shown on the device. The local SDK Daemon handles pairing, and the code is never stored in Test Bench logs.</p>
+        </div>
+        <form class="pairing-form" id="pairingForm">
+          <label for="pairingCode">Six-digit pairing code</label>
+          <div class="pairing-controls">
+            <input
+              id="pairingCode"
+              name="pairing_code"
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]{6}"
+              minlength="6"
+              maxlength="6"
+              autocomplete="one-time-code"
+              placeholder="000000"
+              aria-describedby="pairingResult"
+              required
+            />
+            <input
+              id="deviceIp"
+              name="device_ip"
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="Device IP (optional)"
+              aria-label="Device IP (optional when broadcast is restricted)"
+            />
+            <button class="pairing-action" id="pairingButton" type="submit">Start Pairing</button>
+          </div>
+          <output class="pairing-result" id="pairingResult" aria-live="polite">Enter the pairing code shown on the device</output>
+        </form>
+      </section>
+
+      <section class="telemetry-strip" aria-label="Device Telemetry">
+        <div><span>Device</span><strong id="deviceId">—</strong></div>
+        <div><span>Firmware</span><strong id="firmwareVersion">—</strong></div>
+        <div><span>Capabilities</span><strong id="capabilityCount">00</strong></div>
+        <div><span>Last Sync</span><strong id="lastSync">—</strong></div>
+      </section>
+
+      <section class="assistant-panel" id="assistantPanel" data-i18n-ignore aria-labelledby="assistantTitle">
+        <div class="assistant-heading">
+          <div>
+            <p class="section-index">00.7 / PERSONAL WORK ASSISTANT</p>
+            <h2 id="assistantTitle">个人工作助理</h2>
+            <p>统一日程、在场提醒与可靠会议录音。导入的日程默认只读，跨来源重复项只标记、不自动删除。</p>
+          </div>
+          <div class="assistant-health">
+            <span>助理状态</span>
+            <strong id="assistantState">正在连接</strong>
+            <small id="assistantAsrState">检查 ASR</small>
+          </div>
+        </div>
+
+        <div class="assistant-grid">
+          <article class="assistant-card">
+            <div class="assistant-card-head">
+              <div><span>今日与未来 48 小时</span><h3>多源日程</h3></div>
+              <button class="quiet-action" id="syncMacCalendar" type="button">同步 Mac / 手机日历</button>
+            </div>
+            <form class="assistant-event-form" id="assistantEventForm">
+              <label>标题<input name="title" maxlength="160" placeholder="例：候选人面试" required /></label>
+              <label>开始<input name="start" type="datetime-local" required /></label>
+              <label>结束<input name="end" type="datetime-local" required /></label>
+              <label>提前分钟<input name="reminder_minutes" type="number" min="0" max="10080" value="15" /></label>
+              <label class="assistant-check"><input name="sensitive" type="checkbox" /> 敏感内容（无人时不播报）</label>
+              <button class="station-action" type="submit">添加到智能助手日历</button>
+            </form>
+            <output id="assistantAgendaResult" class="station-result">等待日程数据</output>
+            <div class="assistant-agenda" id="assistantAgenda"></div>
+          </article>
+
+          <article class="assistant-card meeting-card" id="meetingCard" data-recording="false">
+            <div class="assistant-card-head">
+              <div><span>全场录音</span><h3>会议纪要工作台</h3></div>
+              <strong class="recording-badge" id="meetingBadge">IDLE</strong>
+            </div>
+            <label>会议名称<input id="meetingTitle" maxlength="160" placeholder="例：产品复盘会" /></label>
+            <label>录音同意提示<input id="meetingConsent" maxlength="500" value="本次会议将录音并用于生成会议纪要。" /></label>
+            <div class="meeting-clock" id="meetingClock">00:00:00</div>
+            <div class="button-row">
+              <button class="station-action" id="startMeeting" type="button">开始录音</button>
+              <button class="quiet-action" id="stopMeeting" type="button" disabled>停止并保存</button>
+            </div>
+            <div class="meeting-marks" aria-label="会议标记">
+              <button type="button" data-meeting-mark="关键回答">关键回答</button>
+              <button type="button" data-meeting-mark="待办">待办</button>
+              <button type="button" data-meeting-mark="待确认">待确认</button>
+            </div>
+            <output id="meetingResult" class="station-result">未开始录音</output>
+            <a id="meetingAudio" class="assistant-audio-link" hidden>播放已保存录音</a>
+            <p class="assistant-note">录音时日程提醒将静默排队；停止后恢复处理。音频会本地保存，转写和评估需接入本地 ASR。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="resource-panel" id="resourcePanel" data-state="waiting" aria-labelledby="resourceTitle">
+        <div class="resource-heading">
+          <div>
+            <p class="section-index">00.8 / Resource Lifecycle</p>
+            <h2 id="resourceTitle">Device Resource Monitor</h2>
+            <p>Continuously monitor internal memory, largest contiguous blocks, and media resources; compare against the startup baseline after RTC stops.</p>
+          </div>
+          <div class="resource-verdict">
+            <span>Lifecycle Verdict</span>
+            <strong id="resourceState">Waiting for Device Snapshot</strong>
+            <small id="resourceStage">No evt.sdk.resource_snapshot received</small>
+          </div>
+        </div>
+        <dl class="resource-metrics">
+          <div><dt>Internal Free</dt><dd id="resourceInternal">—</dd></div>
+          <div><dt>Largest Block</dt><dd id="resourceLargest">—</dd></div>
+          <div><dt>DMA Free</dt><dd id="resourceDma">—</dd></div>
+          <div><dt>DMA Largest Block</dt><dd id="resourceDmaLargest">—</dd></div>
+          <div><dt>PSRAM Free</dt><dd id="resourcePsram">—</dd></div>
+          <div><dt>PSRAM Largest Block</dt><dd id="resourcePsramLargest">—</dd></div>
+          <div><dt>Boot Minimum Internal RAM</dt><dd id="resourceMinimum">—</dd></div>
+        </dl>
+        <div class="resource-details">
+          <div><span>Owners</span><strong id="resourceOwners">Waiting for Telemetry</strong></div>
+          <div><span>Against Baseline</span><strong id="resourceDelta">Waiting for Baseline</strong></div>
+          <div><span>Release Result</span><strong id="resourceRelease">No RTC Stop Record</strong></div>
+        </div>
+        <details class="resource-transition-table" open>
+          <summary>Recent Feature Resource Snapshots</summary>
+          <p>Worker stack sizes describe resident allocations, not total memory owned by a feature. Full transition history is printed to the device log.</p>
+          <table>
+            <thead><tr><th>Stage</th><th>Internal Free</th><th>Largest Block</th><th>DMA Largest Block</th><th>TTS Stack</th><th>SFX Stack</th></tr></thead>
+            <tbody id="resourceTransitions"></tbody>
+          </table>
+        </details>
+      </section>
+
+      <section class="actuator-grid" aria-label="Actuator Test Bench">
+        <article class="control-card motion-card" data-capability="motion">
+          <div class="station-head">
+            <p class="section-index">01 / Motion Control</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Gimbal Position</h2>
+          <p>Adjust pan and tilt to move the robot smoothly through <code>robot.motion.move_to()</code>.</p>
+          <div class="motion-visual" aria-hidden="true"><span id="motionHead"></span><i></i></div>
+          <div class="control-fields">
+            <label>Horizontal PAN <strong id="panValue">90°</strong><input id="panControl" type="range" min="30" max="150" value="90" /></label>
+            <label>Vertical TILT <strong id="tiltValue">115°</strong><input id="tiltControl" type="range" min="100" max="130" value="115" /></label>
+          </div>
+          <div class="preset-row">
+            <button type="button" data-motion-preset="left">Left</button>
+            <button type="button" data-motion-preset="center">Center</button>
+            <button type="button" data-motion-preset="right">Right</button>
+          </div>
+          <div class="button-row">
+            <button class="station-action" id="applyMotionButton" type="button">Move</button>
+            <button class="quiet-action" id="stopMotionButton" type="button">Stop Now</button>
+          </div>
+          <output class="station-result" id="motionResult">Awaiting Control</output>
+        </article>
+
+        <article class="control-card light-card" data-capability="light">
+          <div class="station-head">
+            <p class="section-index">02 / Lighting Control</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Body Lighting</h2>
+          <p>Set color, brightness, zones, or looping effects through the public <code>robot.lights</code> API.</p>
+          <div class="light-visual" id="lightVisual" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="light-fields">
+            <label>Color<input id="lightColor" type="color" value="#d9ff57" /></label>
+            <label>Brightness <strong id="brightnessValue">70%</strong><input id="lightBrightness" type="range" min="0" max="100" value="70" /></label>
+            <label>Zone<select id="lightZone"><option value="all">All</option><option value="side">Side</option><option value="bottom">Bottom</option></select></label>
+            <label>Effect<select id="lightEffect"><option value="breathing">Breathing</option><option value="blink">Blink</option><option value="rainbow">Rainbow</option><option value="status_pulse">Status Pulse</option></select></label>
+          </div>
+          <div class="button-row">
+            <button class="station-action" id="applyLightButton" type="button">Apply Solid</button>
+            <button class="quiet-action" id="playLightEffectButton" type="button">Play Effect</button>
+            <button class="quiet-action" id="lightsOffButton" type="button">Off</button>
+          </div>
+          <output class="station-result" id="lightResult">Awaiting Control</output>
+        </article>
+
+        <article class="control-card animation-card" data-capability="animation">
+          <div class="station-head">
+            <p class="section-index">02.5 / Screen Animation</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Concurrent Animation Validation</h2>
+          <p>The device reports the complete animation catalog available on its SD card. You can switch animations manually or use randomized playback during an audio/video session.</p>
+          <div class="control-fields">
+            <label>Animation ID
+              <input id="animationId" type="text" list="animationSuggestions" autocomplete="off" />
+            </label>
+            <label>Random interval (seconds)
+              <input id="animationRandomInterval" type="number" min="3" max="120" step="1" value="8" />
+            </label>
+            <datalist id="animationSuggestions"></datalist>
+          </div>
+          <p class="animation-catalog-summary" id="animationCatalogSummary">Waiting for the device animation catalog</p>
+          <div class="button-row">
+            <button class="station-action" id="playAnimationButton" type="button">Play Animation</button>
+            <button class="quiet-action" id="stopAnimationButton" type="button">Stop Animation</button>
+            <button class="station-action" id="startRandomAnimationButton" type="button">Start Random</button>
+            <button class="quiet-action" id="stopRandomAnimationButton" type="button">Stop Random</button>
+          </div>
+          <output class="station-result" id="animationResult">Awaiting Control</output>
+        </article>
+      </section>
+
+      <section class="rtc-audio-panel" id="faceTrackingPanel" aria-labelledby="faceTrackingTitle">
+        <p class="eyebrow">02.8 / Edge Vision</p>
+        <h2 id="faceTrackingTitle">Face Tracking Test</h2>
+        <p>Run tracking on the robot, with optional matching preview frames. Starting tracking moves the gimbal; stopping holds its current position. Stop live video before starting tracking.</p>
+        <p id="faceTrackingCapability">Waiting for device capabilities</p>
+        <div class="button-row">
+          <button class="station-action" id="queryVisionButton" type="button" disabled>Query Vision Status</button>
+          <button class="station-action" id="startFaceTrackingButton" type="button" disabled>Start Face Tracking</button>
+          <button class="station-action" id="startFacePreviewButton" type="button" disabled>Start with Preview</button>
+          <button class="quiet-action" id="stopFaceTrackingButton" type="button" disabled>Stop Face Tracking</button>
+        </div>
+        <p id="faceTrackingResult" role="status">Awaiting Test</p>
+        <p id="facePreviewHint">Checking face preview support</p>
+        <canvas id="facePreviewCanvas" width="640" height="480" hidden style="max-width:100%;height:auto;background:#101820;border-radius:12px"></canvas>
+        <p id="facePreviewMetrics" role="status"></p>
+        <pre id="faceVisionStatus" style="white-space:pre-wrap;overflow-wrap:anywhere">—</pre>
+      </section>
+
+      <section class="rtc-audio-panel" id="inferencePanel" aria-labelledby="inferenceTitle">
+        <p class="eyebrow">02.9 / Model Inference</p>
+        <h2 id="inferenceTitle">Gesture and Face Model Test</h2>
+        <p>Test gesture and face detection with optional preview and no gimbal movement. Stop camera features before starting.</p>
+        <div class="button-row">
+          <button id="queryModelsButton" class="station-action" type="button" disabled>Read Models</button>
+          <label for="inferenceModel">Model</label>
+          <select id="inferenceModel"><option value="">Read models first</option></select>
+          <button id="startInferenceButton" class="station-action" type="button" disabled>Start Inference</button>
+          <button id="startInferencePreviewButton" class="station-action" type="button" disabled>Start Model Preview</button>
+          <button id="queryInferenceButton" class="station-action" type="button" disabled>Read Latest Result</button>
+          <button id="stopInferenceButton" class="quiet-action" type="button" disabled>Stop Inference</button>
+        </div>
+        <p id="inferenceState" role="status">Awaiting Test</p>
+        <canvas id="inferenceCanvas" width="640" height="480" hidden style="max-width:100%;height:auto"></canvas>
+        <p id="inferenceMetrics" role="status"></p>
+        <pre id="inferenceResult" style="white-space:pre-wrap;overflow-wrap:anywhere">—</pre>
+      </section>
+
+      <section class="live-video-panel" id="liveVideoPanel" data-available="false" aria-labelledby="liveVideoTitle">
+        <div class="live-video-copy">
+          <div class="station-head">
+            <p class="section-index">03 / Live Video</p>
+            <span class="capability-state" id="liveVideoCapability">Detecting</span>
+          </div>
+          <h2 id="liveVideoTitle">Live Camera Preview</h2>
+          <p>
+              The browser receives Watcher MJPEG video directly over a dedicated LAN channel;
+              full-duplex audio continues over WebRTC, and the Python Application does not relay media frames.
+          </p>
+          <div class="live-video-controls">
+            <button class="station-action" id="startLiveVideoButton" type="button">Start Live Video</button>
+            <button class="quiet-action" id="stopLiveVideoButton" type="button" disabled>Stop Live Video</button>
+          </div>
+          <output class="station-result" id="liveVideoResult">Awaiting Start</output>
+          <dl class="live-video-metrics">
+            <div><dt>State</dt><dd id="liveVideoState">IDLE</dd></div>
+            <div><dt>Display FPS</dt><dd id="liveVideoFps">0.0 FPS</dd></div>
+            <div><dt>Source / Target / Sent</dt><dd id="liveVideoPipelineFps">—</dd></div>
+            <div><dt>Average Frame / Send P95</dt><dd id="liveVideoTransport">—</dd></div>
+            <div><dt>Congestion Pressure</dt><dd id="liveVideoCongestion">Browser 0 / Animation 0</dd></div>
+            <div><dt>Animation Actual / Target</dt><dd id="liveVideoAnimation">No active animation detected</dd></div>
+            <div><dt>Resolution</dt><dd id="liveVideoResolution">—</dd></div>
+            <div><dt>Local Drops</dt><dd id="liveVideoDrops">0</dd></div>
+          </dl>
+        </div>
+        <div class="live-video-stage" id="liveVideoStage" data-state="idle">
+          <canvas id="liveVideoCanvas" width="640" height="480" aria-label="Watcher Live Camera Preview"></canvas>
+          <div class="live-video-empty" id="liveVideoEmpty">
+            <span class="live-scan" aria-hidden="true"></span>
+            <strong>Waiting for Video</strong>
+            <small>WATCHER-RTC / MJPEG-DATA</small>
+          </div>
+          <div class="live-video-hud" aria-hidden="true">
+            <span class="live-pill" id="liveVideoIndicator">STANDBY</span>
+            <span id="liveVideoFrameAge">NO FRAME</span>
+          </div>
+          <span class="frame-corner top-left"></span><span class="frame-corner top-right"></span>
+          <span class="frame-corner bottom-left"></span><span class="frame-corner bottom-right"></span>
+        </div>
+      </section>
+
+      <section class="rtc-audio-panel" id="rtcAudioPanel" data-available="false" aria-labelledby="rtcAudioTitle">
+        <div>
+          <div class="station-head">
+            <p class="section-index">04 / RTC Audio</p>
+            <span class="capability-state" id="rtcAudioCapability">Detecting</span>
+          </div>
+          <h2 id="rtcAudioTitle">Full-duplex Audio Call</h2>
+          <p>
+            Stream the computer microphone to the Watcher speaker while playing the Watcher microphone in the browser.
+            The current Python Application handles signaling while audio uses a direct LAN WebRTC connection.
+          </p>
+          <div class="rtc-audio-controls">
+            <button class="station-action" id="startRtcAudioButton" type="button">Start Full-duplex Call</button>
+            <button class="station-action" id="startRtcAvButton" type="button">Start Audio + Video</button>
+            <button class="quiet-action" id="stopRtcAudioButton" type="button" disabled>End Call</button>
+          </div>
+          <output class="station-result" id="rtcAudioResult">Awaiting Start</output>
+        </div>
+        <div class="rtc-audio-console" id="rtcAudioConsole" data-state="idle">
+          <div class="rtc-audio-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+          <dl class="rtc-audio-metrics">
+            <div><dt>Session State</dt><dd id="rtcAudioState">IDLE</dd></div>
+            <div><dt>Computer Microphone</dt><dd id="rtcAudioLocalState">Available</dd></div>
+            <div><dt>Computer → Watcher</dt><dd id="rtcAudioUpPackets">0</dd></div>
+            <div><dt>Watcher → Computer</dt><dd id="rtcAudioDownPackets">0</dd></div>
+            <div><dt>Robot Microphone Capture</dt><dd id="rtcAudioDeviceCapture">0</dd></div>
+            <div><dt>Robot Packets Sent</dt><dd id="rtcAudioDeviceTx">0</dd></div>
+            <div><dt>Physical Mic Peak / Browser Playback</dt><dd id="rtcAudioSignal">0 / 0.000</dd></div>
+            <div><dt>Device Echo Cancellation</dt><dd id="rtcAudioAec">Waiting for Device Telemetry</dd></div>
+            <div><dt>Real-time Audio Stage Latency</dt><dd id="rtcAudioLatency">Waiting for Stage Latency Samples</dd></div>
+            <div><dt>Validation Action</dt><dd>Speak toward the robot</dd></div>
+          </dl>
+          <audio id="rtcRemoteAudio" autoplay controls aria-label="Live Watcher Microphone Audio"></audio>
+          <small>Raw microphone capture is used by default. Wear headphones to avoid an acoustic loop between the device and computer speakers.</small>
+        </div>
+      </section>
+
+      <section class="stations" aria-label="Media Test Bench">
+        <article class="station station-audio" data-capability="audio.stream">
+          <div class="station-head">
+            <p class="section-index">05 / Audio Downlink</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Speaker Stream</h2>
+          <p>Stream the built-in 24 kHz mono PCM sample through the Application channel.</p>
+          <div class="scope speaker-scope" aria-hidden="true">
+            <span style="--h: 22%"></span><span style="--h: 44%"></span><span style="--h: 72%"></span>
+            <span style="--h: 38%"></span><span style="--h: 88%"></span><span style="--h: 54%"></span>
+            <span style="--h: 28%"></span><span style="--h: 64%"></span><span style="--h: 42%"></span>
+            <span style="--h: 76%"></span><span style="--h: 34%"></span><span style="--h: 58%"></span>
+          </div>
+          <div class="button-row">
+            <button class="station-action" id="playAudioButton" type="button">Play Sample</button>
+            <button class="quiet-action" id="stopAudioButton" type="button">Stop</button>
+          </div>
+          <output class="station-result" id="audioResult">Awaiting Test</output>
+        </article>
+
+        <article class="station station-camera" data-capability="camera.capture">
+          <div class="station-head">
+            <p class="section-index">06 / Image Capture</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Camera Capture</h2>
+          <p>Capture one JPEG photo and return it as a managed Application artifact.</p>
+          <div class="camera-stage" id="cameraStage">
+            <img id="cameraPreview" alt="Latest captured photo" hidden />
+            <div class="camera-empty" id="cameraEmpty">
+              <span class="reticle" aria-hidden="true"></span>
+              <strong>No Image</strong>
+              <small>Capture channel ready</small>
+            </div>
+            <span class="frame-corner top-left"></span><span class="frame-corner top-right"></span>
+            <span class="frame-corner bottom-left"></span><span class="frame-corner bottom-right"></span>
+          </div>
+          <div class="button-row">
+            <button class="station-action" id="capturePhotoButton" type="button">Capture JPEG</button>
+            <a class="quiet-action link-action" id="downloadPhoto" href="#" download="camera.jpg" hidden>Download Photo</a>
+          </div>
+          <output class="station-result" id="cameraResult">Awaiting Test</output>
+        </article>
+
+        <article class="station station-microphone" data-capability="microphone">
+          <div class="station-head">
+            <p class="section-index">07 / Audio Uplink</p>
+            <span class="capability-state">Detecting</span>
+          </div>
+          <h2>Microphone Recording</h2>
+          <p>Receive Watcher Opus audio, decode it to PCM through the SDK, and save a validated WAV file.</p>
+          <div class="duration-control">
+            <label for="recordDuration">Recording Duration</label>
+            <input id="recordDuration" type="range" min="1" max="15" value="5" step="1" />
+            <strong><span id="durationValue">5</span> s</strong>
+          </div>
+          <canvas class="waveform" id="waveform" width="640" height="150" aria-label="Microphone recording waveform"></canvas>
+          <div class="button-row">
+            <button class="station-action" id="recordMicrophoneButton" type="button">Record PCM</button>
+            <a class="quiet-action link-action" id="downloadRecording" href="#" download="microphone.wav" hidden>Download Recording</a>
+          </div>
+          <audio id="recordingPlayer" controls hidden></audio>
+          <output class="station-result" id="microphoneResult">Awaiting Test</output>
+        </article>
+      </section>
+
+      <section class="lower-grid">
+        <article class="capability-panel">
+          <div class="panel-heading">
+            <div><p class="section-index">08 / Capability Contract</p><h2>Device Capability Matrix</h2></div>
+            <span id="capabilitySummary">Syncing</span>
+          </div>
+          <div class="capability-grid" id="capabilityGrid" aria-live="polite"></div>
+        </article>
+
+        <article class="event-panel">
+          <div class="panel-heading">
+            <div><p class="section-index">09 / Runtime Trace</p><h2>Run Log</h2></div>
+            <button class="text-button" id="clearVisualLog" type="button">Clear Display</button>
+          </div>
+          <ol class="event-log" id="eventLog" aria-live="polite"></ol>
+        </article>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <footer>
+      <span>Local Page · 127.0.0.1</span>
+      <span>APPLICATION → DAEMON → WATCHER</span>
+      <span id="footerClock">--:--:--</span>
+    </footer>
+  </body>
+</html>
