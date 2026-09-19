@@ -10,8 +10,11 @@
 提醒默认在开始前 15 分钟检查人员在场状态；在场时由机器人语音播报，
 不在场或摄像头被占用时转为飞书/企微待发通道。会议录音期间提醒静默排队，
 停止录音后恢复处理。会议音频使用 SDK `recording.host.v1` 可靠流保存，并支持
-“关键回答 / 待办 / 待确认”时间标记。当前环境未配置 ASR，因此录音完成后会标记
-`pending_asr`，不会伪造逐字稿或面试评估。
+“关键回答 / 待办 / 待确认”时间标记。录音完成并释放机器人麦克风后，
+后台会自动用本地 FunASR 生成逐字稿，再生成结构化会议纪要。默认复用
+`~/.workbuddy/skills/feishu-meeting-transcript`；可用 `WATCHER_MEETING_PIPELINE_HOME`
+和 `WATCHER_MEETING_PIPELINE_PYTHON` 覆盖。转写音频始终留在本机；如果该
+pipeline 已配置 DeepSeek，只会上传转写文本用于生成纪要。
 
 SDK Test Bench is a standalone managed Application for whole-robot hardware
 acceptance. It serves a loopback-only browser dashboard, exercises only public
@@ -58,6 +61,11 @@ face boxes, and shows sequence and frame age. The button requires
 `face_tracking.preview.v1`; older PTL firmware keeps headless tracking available.
 Stop before switching between headless and preview modes. Stop timeouts retain
 the camera/motion lease, and the frame endpoint never returns stale frames after stop.
+The meeting recorder automatically starts headless face tracking when a meeting
+begins, so the mobile robot keeps facing the speaker while host audio is recorded.
+If tracking was already running, the recorder reuses it and leaves it running after
+the meeting. Tracking owned by the meeting stops with the `hold` policy when the
+recording ends or fails; a stop failure remains visible as `stop_required`.
 `POST /api/face-tracking/preview/start` and `GET /api/face-tracking/preview/frame`
 serve the loopback dashboard; they use the managed Application Device channel.
 See [the SDK lifecycle contract](../../docs/face-tracking-lifecycle.md) and

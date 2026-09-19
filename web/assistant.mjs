@@ -85,6 +85,17 @@ export function initializeAssistant() {
     const result = $("#meetingResult");
     result.textContent = meeting ? `${meeting.title} · ${meeting.state}${meeting.transcript_state ? ` · ${meeting.transcript_state}` : ""}` : "未开始录音";
     result.dataset.tone = meeting?.state === "failed" ? "error" : meeting?.state === "completed" ? "ok" : "";
+    const tracking = $("#meetingTrackingState");
+    const trackingState = meeting?.face_tracking_state || "idle";
+    tracking.dataset.state = trackingState;
+    tracking.textContent = {
+      running: "人脸跟随：运行中，机器人会持续面向你",
+      already_running: "人脸跟随：沿用会议前已开启的跟随",
+      stopped: "人脸跟随：已随会议结束停止",
+      stop_required: "人脸跟随：停止待重试",
+      unsupported: "人脸跟随：当前固件不支持",
+      idle: "人脸跟随：等待会议开始",
+    }[trackingState] || `人脸跟随：${trackingState}`;
     const audio = $("#meetingAudio");
     if (meeting?.audio_url) { audio.href = meeting.audio_url; audio.hidden = false; } else { audio.hidden = true; }
     const processingState = $("#meetingProcessingState");

@@ -566,6 +566,9 @@ footer { position: relative; z-index: 11; display: flex; justify-content: space-
 .assistant-note { color: var(--muted); font-size: .76rem; line-height: 1.6; }
 .assistant-audio-link { color: var(--signal); font: .72rem var(--mono); }
 .meeting-processing, .meeting-actions-panel { display: grid; gap: 8px; padding: 13px; border: 1px solid var(--line); background: rgba(255,255,255,.018); }
+.meeting-tracking-state { border: 1px solid var(--line); padding: 10px 12px; color: var(--muted); background: rgba(255,255,255,.018); font: .68rem/1.45 var(--mono); }
+.meeting-tracking-state[data-state="running"], .meeting-tracking-state[data-state="already_running"] { border-color: rgba(64,190,126,.42); color: #79d9a8; background: rgba(64,190,126,.08); }
+.meeting-tracking-state[data-state="stop_required"] { border-color: rgba(255,91,61,.45); color: #ff8a74; }
 .meeting-processing span, .meeting-actions-panel small, .meeting-action-item small { color: var(--muted); font: .62rem/1.5 var(--mono); }
 .meeting-output-links { display: flex; gap: 14px; }
 .meeting-output-links a { color: var(--signal); font: .68rem var(--mono); }

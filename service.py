@@ -334,6 +334,7 @@ class MediaLabService:
         self._face_state = "idle"
         self._face_preview: Any = None
         self._face_preview_last_frame_at = 0.0
+        self._face_model_id: int | None = None
         self._assistant = AssistantStore(self._artifacts_dir.parent / "assistant_data")
         self._assistant_lock = threading.RLock()
         recent_meetings = self._assistant.meetings()
@@ -348,6 +349,7 @@ class MediaLabService:
         self._meeting_operation: Any = None
         self._meeting_thread: threading.Thread | None = None
         self._meeting_postprocess_thread: threading.Thread | None = None
+        self._meeting_face_tracking_owned = False
         self._meeting_stop = threading.Event()
         self._meeting_started_monotonic = 0.0
         self._meeting_max_seconds = 0.0
@@ -395,6 +397,7 @@ class MediaLabService:
             "face_tracking": {
                 "state": face_state,
                 "supported": "face_tracking.control.v1" in self._robot.capabilities,
+                "model_id": self._face_model_id,
                 "preview_supported": "face_tracking.preview.v1" in self._robot.capabilities,
                 "preview_running": self._face_preview is not None and face_state == "running",
                 "preview_receiving": self._face_preview is not None and
@@ -495,6 +498,30 @@ class MediaLabService:
         with self._state_lock:
             self._face_state = state
 
+    def _select_face_tracking_model(self) -> int | None:
+        required = {
+            "vision.status.v1",
+            "vision.models.v1",
+            "vision.model.select.v1",
+        }
+        if not required.issubset(set(self._robot.capabilities)):
+            return None
+        status = self._robot.vision.status(timeout=3.0)
+        if status.model is not None and status.model.contains_face_class:
+            self._face_model_id = status.model.model_id
+            return self._face_model_id
+        candidates = [
+            model for model in self._robot.vision.models(timeout=5.0)
+            if model.contains_face_class and model.verified
+        ]
+        if not candidates:
+            raise MediaLabCapabilityError("verified face detection model")
+        selected = self._robot.vision.select_model(candidates[0].model_id, timeout=12.0)
+        if selected is None or not selected.contains_face_class:
+            raise RuntimeError("face detection model selection was not confirmed")
+        self._face_model_id = selected.model_id
+        return self._face_model_id
+
     def start_face_tracking(self, *, preview: bool = False) -> dict[str, object]:
         with self._face_lock:
             self._ensure_device_online()
@@ -511,16 +538,25 @@ class MediaLabService:
             lease.__enter__()
             self._face_lease = lease
             self._set_face_state("starting")
+            tracking_command_attempted = False
             try:
+                self._select_face_tracking_model()
                 # Cold startup includes validating the four on-device model slots.
                 if preview:
                     self._face_preview_last_frame_at = 0.0
+                    tracking_command_attempted = True
                     self._face_preview = self._robot.face_tracking.open_preview(
                         width=640, height=480, frame_stride=1, stop_policy="hold", queue_size=1,
                     )
                 else:
+                    tracking_command_attempted = True
                     self._robot.face_tracking.start(timeout=10.0)
             except Exception:
+                if not tracking_command_attempted:
+                    self._face_lease.__exit__(None, None, None)
+                    self._face_lease = None
+                    self._set_face_state("idle")
+                    raise
                 # A timeout does not prove the motors never started.
                 self._set_face_state("stop_required")
                 try:
@@ -529,7 +565,7 @@ class MediaLabService:
                     _LOGGER.exception("Face tracking start cleanup remains unconfirmed")
                 raise
             self._set_face_state("running")
-            return {"state": "running"}
+            return {"state": "running", "model_id": self._face_model_id}
 
     def face_preview_frame(self) -> dict[str, object]:
         # One bounded read, no unbounded frame backlog or independent device connection.
@@ -955,11 +991,34 @@ class MediaLabService:
             if self._meeting and self._meeting.get("state") in {"starting", "recording", "stopping"}:
                 raise MediaLabBusyError("A meeting recording is already active")
             self._ensure_capability("recording.host.v1")
+            face_tracking_owned = False
+            face_tracking_state = "unsupported"
+            face_tracking_model_id: int | None = None
+            if "face_tracking.control.v1" in self._robot.capabilities:
+                with self._face_lock:
+                    face_tracking_running = (
+                        self._face_lease is not None and self._face_state == "running"
+                    )
+                if face_tracking_running:
+                    face_tracking_state = "already_running"
+                    face_tracking_model_id = self._face_model_id
+                else:
+                    tracking = self.start_face_tracking(preview=False)
+                    face_tracking_owned = True
+                    face_tracking_state = "running"
+                    model_id = tracking.get("model_id")
+                    face_tracking_model_id = int(model_id) if isinstance(model_id, int) else None
             operation = self._operation("meeting_recording", resources=("microphone",))
-            operation.__enter__()
+            try:
+                operation.__enter__()
+            except Exception:
+                if face_tracking_owned:
+                    self.stop_face_tracking()
+                raise
             meeting = self._assistant.begin_meeting(title, consent_statement)
             self._meeting = meeting
             self._meeting_operation = operation
+            self._meeting_face_tracking_owned = face_tracking_owned
             self._meeting_stop.clear()
             self._meeting_started_monotonic = time.monotonic()
             self._meeting_max_seconds = float(max_duration_minutes * 60)
@@ -968,12 +1027,27 @@ class MediaLabService:
             except Exception:
                 operation.__exit__(None, None, None)
                 self._meeting_operation = None
-                self._assistant.update_meeting(str(meeting["id"]), state="failed", error="recording_start_failed")
+                if face_tracking_owned:
+                    try:
+                        self.stop_face_tracking()
+                    finally:
+                        self._meeting_face_tracking_owned = False
+                self._assistant.update_meeting(
+                    str(meeting["id"]),
+                    state="failed",
+                    error="recording_start_failed",
+                    face_tracking_state="stopped" if face_tracking_owned else face_tracking_state,
+                )
                 self._meeting = None
                 raise
             self._meeting_recording = recording
             self._meeting = self._assistant.update_meeting(
-                str(meeting["id"]), state="recording", recording_id=recording.id
+                str(meeting["id"]),
+                state="recording",
+                recording_id=recording.id,
+                face_tracking_state=face_tracking_state,
+                face_tracking_owned=face_tracking_owned,
+                face_tracking_model_id=face_tracking_model_id,
             )
             self._meeting_thread = threading.Thread(
                 target=self._meeting_recording_worker,
@@ -1102,6 +1176,23 @@ class MediaLabService:
                 self._meeting_stop.clear()
             if operation is not None:
                 operation.__exit__(RuntimeError if error_message else None, RuntimeError(error_message) if error_message else None, None)
+            if self._meeting_face_tracking_owned:
+                try:
+                    self.stop_face_tracking()
+                except Exception as tracking_error:
+                    _LOGGER.exception("Meeting face tracking could not be stopped")
+                    self._set_current_meeting(
+                        meeting_id,
+                        face_tracking_state="stop_required",
+                        face_tracking_warning=str(tracking_error)[:500],
+                    )
+                else:
+                    self._meeting_face_tracking_owned = False
+                    self._set_current_meeting(
+                        meeting_id,
+                        face_tracking_state="stopped",
+                        face_tracking_owned=False,
+                    )
         if postprocess_ready:
             self._start_meeting_postprocess(meeting_id, wav_path)
 

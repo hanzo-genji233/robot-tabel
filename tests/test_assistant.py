@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from assistant import AssistantStore
 from service import MediaLabService
@@ -91,6 +93,72 @@ class AssistantStoreTests(unittest.TestCase):
 
 
 class MeetingPipelineTests(unittest.TestCase):
+    def _meeting_service(self, root: Path, *, tracking_running: bool) -> MediaLabService:
+        service = MediaLabService.__new__(MediaLabService)
+        service._assistant = AssistantStore(root)
+        service._assistant_lock = threading.RLock()
+        service._face_lock = threading.RLock()
+        service._face_lease = object() if tracking_running else None
+        service._face_state = "running" if tracking_running else "idle"
+        service._face_model_id = 4 if tracking_running else None
+        service._meeting = None
+        service._meeting_operation = None
+        service._meeting_recording = None
+        service._meeting_thread = None
+        service._meeting_face_tracking_owned = False
+        service._meeting_stop = threading.Event()
+        service._robot = MagicMock()
+        service._robot.capabilities = ["recording.host.v1", "face_tracking.control.v1"]
+        service._robot.recordings.start_host.return_value.id = "recording-1"
+        service._ensure_capability = MagicMock()
+        service._operation = MagicMock(return_value=MagicMock())
+        service.start_face_tracking = MagicMock(return_value={"state": "running"})
+        service.stop_face_tracking = MagicMock(return_value={"state": "idle"})
+        return service
+
+    def test_meeting_starts_and_owns_face_tracking_when_idle(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._meeting_service(Path(directory), tracking_running=False)
+            with patch("service.threading.Thread") as thread:
+                result = service.start_meeting_recording(
+                    title="产品周会",
+                    consent_statement="已获得录音同意",
+                    max_duration_minutes=30,
+                )
+            service.start_face_tracking.assert_called_once_with(preview=False)
+            self.assertTrue(result["meeting"]["face_tracking_owned"])
+            self.assertEqual(result["meeting"]["face_tracking_state"], "running")
+            thread.return_value.start.assert_called_once()
+
+    def test_meeting_reuses_preexisting_face_tracking_without_owning_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = self._meeting_service(Path(directory), tracking_running=True)
+            with patch("service.threading.Thread"):
+                result = service.start_meeting_recording(
+                    title="产品周会",
+                    consent_statement="已获得录音同意",
+                    max_duration_minutes=30,
+                )
+            service.start_face_tracking.assert_not_called()
+            self.assertFalse(result["meeting"]["face_tracking_owned"])
+            self.assertEqual(result["meeting"]["face_tracking_state"], "already_running")
+
+    def test_face_tracking_selects_verified_face_model(self) -> None:
+        service = MediaLabService.__new__(MediaLabService)
+        service._face_model_id = None
+        service._robot = MagicMock()
+        service._robot.capabilities = [
+            "vision.status.v1", "vision.models.v1", "vision.model.select.v1",
+        ]
+        gesture = SimpleNamespace(model_id=3, contains_face_class=False, verified=True)
+        face = SimpleNamespace(model_id=4, contains_face_class=True, verified=True)
+        service._robot.vision.status.return_value.model = gesture
+        service._robot.vision.models.return_value = (gesture, face)
+        service._robot.vision.select_model.return_value = face
+        selected = service._select_face_tracking_model()
+        self.assertEqual(selected, 4)
+        service._robot.vision.select_model.assert_called_once_with(4, timeout=12.0)
+
     def test_extracts_real_action_items_from_summary_table(self) -> None:
         summary = """## 待办事项
 | 责任人 | 任务 | 截止时间 |
